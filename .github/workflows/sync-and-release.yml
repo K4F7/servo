@@ -1,0 +1,408 @@
+name: Sync Upstream and Release
+
+on:
+  # 定时检查上游更新 (每天 UTC 6:00，北京时间 14:00)
+  schedule:
+    - cron: '0 6 * * *'
+  # 手动触发
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Force build even if no updates'
+        type: boolean
+        default: false
+
+env:
+  RUST_BACKTRACE: 1
+  SHELL: /bin/bash
+  UPSTREAM_REPO: servo/servo
+
+jobs:
+  sync-upstream:
+    name: Sync from upstream
+    runs-on: ubuntu-latest
+    outputs:
+      has_updates: ${{ steps.sync.outputs.has_updates }}
+      new_commits: ${{ steps.sync.outputs.new_commits }}
+      upstream_sha: ${{ steps.sync.outputs.upstream_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
+          git fetch upstream main
+
+      - name: Check for updates and sync
+        id: sync
+        run: |
+          # 获取当前和上游的 commit
+          CURRENT_SHA=$(git rev-parse HEAD)
+          UPSTREAM_SHA=$(git rev-parse upstream/main)
+
+          echo "Current SHA: $CURRENT_SHA"
+          echo "Upstream SHA: $UPSTREAM_SHA"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> $GITHUB_OUTPUT
+
+          if [ "$CURRENT_SHA" = "$UPSTREAM_SHA" ]; then
+            echo "Already up to date"
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            echo "new_commits=0" >> $GITHUB_OUTPUT
+          else
+            # 计算新 commit 数量
+            NEW_COMMITS=$(git rev-list --count HEAD..upstream/main)
+            echo "Found $NEW_COMMITS new commits from upstream"
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "new_commits=${NEW_COMMITS}" >> $GITHUB_OUTPUT
+
+            # 合并上游更改
+            git merge upstream/main --no-edit -m "Merge upstream servo/servo main branch"
+            git push origin main
+          fi
+
+      - name: Force build check
+        if: github.event.inputs.force_build == 'true'
+        run: echo "has_updates=true" >> $GITHUB_OUTPUT
+
+  create-release:
+    name: Create Release
+    needs: sync-upstream
+    if: needs.sync-upstream.outputs.has_updates == 'true' || github.event.inputs.force_build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create-release.outputs.release_id }}
+      upload_url: ${{ steps.create-release.outputs.upload_url }}
+      tag_name: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Generate tag name
+        id: tag
+        run: |
+          TAG="nightly-$(date +%Y%m%d-%H%M%S)"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create-release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Nightly ${{ steps.tag.outputs.tag }}
+          body: |
+            ## Auto-synced from upstream servo/servo
+
+            - Upstream commit: `${{ needs.sync-upstream.outputs.upstream_sha }}`
+            - New commits synced: ${{ needs.sync-upstream.outputs.new_commits }}
+            - Build time: ${{ github.event.repository.updated_at }}
+
+            ## Downloads
+            | Platform | File |
+            |----------|------|
+            | Linux x64 | `servo-linux-x64.tar.gz` |
+            | Windows x64 | `servo-windows-x64.zip` |
+            | macOS Intel | `servo-macos-x64.dmg` |
+            | macOS ARM64 | `servo-macos-arm64.dmg` |
+            | Android ARM64 | `servo-android-aarch64.apk` |
+            | Android ARMv7 | `servo-android-armv7.apk` |
+            | Android x64 | `servo-android-x86_64.apk` |
+          draft: true
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    name: Build Linux
+    needs: create-release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - name: Bootstrap
+        run: |
+          sudo apt-get update
+          python3 ./mach bootstrap
+
+      - name: Build
+        run: python3 ./mach build --release
+
+      - name: Package
+        run: python3 ./mach package --release
+
+      - name: Find and upload artifact
+        run: |
+          ARTIFACT=$(find target -name "*.tar.gz" -type f | head -1)
+          if [ -n "$ARTIFACT" ]; then
+            cp "$ARTIFACT" servo-linux-x64.tar.gz
+          else
+            tar -czvf servo-linux-x64.tar.gz -C target/release servo || true
+          fi
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag_name }}
+          files: servo-linux-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: servo-linux-x64
+          path: servo-linux-x64.tar.gz
+        continue-on-error: true
+
+  build-windows:
+    name: Build Windows
+    needs: create-release
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - name: Bootstrap
+        run: python mach bootstrap
+
+      - name: Build
+        run: python mach build --release
+
+      - name: Package
+        run: |
+          Compress-Archive -Path target\release\servo.exe -DestinationPath servo-windows-x64.zip -Force
+        shell: pwsh
+        continue-on-error: true
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag_name }}
+          files: servo-windows-x64.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: servo-windows-x64
+          path: servo-windows-x64.zip
+        continue-on-error: true
+
+  build-macos:
+    name: Build macOS Intel
+    needs: create-release
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - name: Bootstrap
+        run: python3 ./mach bootstrap
+
+      - name: Build
+        run: python3 ./mach build --release
+
+      - name: Package
+        run: |
+          python3 ./mach package --release || true
+          # Fallback: create tar.gz if dmg fails
+          if [ ! -f target/release/*.dmg ]; then
+            tar -czvf servo-macos-x64.tar.gz -C target/release Servo.app || \
+            tar -czvf servo-macos-x64.tar.gz -C target/release servo
+          else
+            cp target/release/*.dmg servo-macos-x64.dmg
+          fi
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag_name }}
+          files: |
+            servo-macos-x64.dmg
+            servo-macos-x64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: servo-macos-x64
+          path: |
+            servo-macos-x64.dmg
+            servo-macos-x64.tar.gz
+        continue-on-error: true
+
+  build-macos-arm64:
+    name: Build macOS ARM64
+    needs: create-release
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - name: Bootstrap
+        run: python3 ./mach bootstrap
+
+      - name: Build
+        run: python3 ./mach build --release
+
+      - name: Package
+        run: |
+          python3 ./mach package --release || true
+          if [ ! -f target/release/*.dmg ]; then
+            tar -czvf servo-macos-arm64.tar.gz -C target/release Servo.app || \
+            tar -czvf servo-macos-arm64.tar.gz -C target/release servo
+          else
+            cp target/release/*.dmg servo-macos-arm64.dmg
+          fi
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag_name }}
+          files: |
+            servo-macos-arm64.dmg
+            servo-macos-arm64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: servo-macos-arm64
+          path: |
+            servo-macos-arm64.dmg
+            servo-macos-arm64.tar.gz
+        continue-on-error: true
+
+  build-android:
+    name: Build Android
+    needs: create-release
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            artifact_name: servo-android-aarch64.apk
+          - target: armv7-linux-androideabi
+            artifact_name: servo-android-armv7.apk
+          - target: x86_64-linux-android
+            artifact_name: servo-android-x86_64.apk
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 2
+
+      - name: Bootstrap
+        run: |
+          sudo apt-get update
+          python3 ./mach bootstrap --target=${{ matrix.target }}
+
+      - name: Build
+        run: python3 ./mach build --release --target=${{ matrix.target }}
+
+      - name: Find APK
+        run: |
+          APK=$(find target -name "*.apk" -type f | head -1)
+          if [ -n "$APK" ]; then
+            cp "$APK" ${{ matrix.artifact_name }}
+          fi
+        continue-on-error: true
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.create-release.outputs.tag_name }}
+          files: ${{ matrix.artifact_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: ${{ matrix.artifact_name }}
+        continue-on-error: true
+
+  publish-release:
+    name: Publish Release
+    needs: [create-release, build-linux, build-windows, build-macos, build-macos-arm64, build-android]
+    runs-on: ubuntu-latest
+    if: always() && needs.create-release.result == 'success'
+    steps:
+      - name: Check build results
+        id: check
+        run: |
+          # 检查是否有任何构建成功
+          if [[ "${{ needs.build-linux.result }}" == "success" ]] || \
+             [[ "${{ needs.build-windows.result }}" == "success" ]] || \
+             [[ "${{ needs.build-macos.result }}" == "success" ]] || \
+             [[ "${{ needs.build-macos-arm64.result }}" == "success" ]]; then
+            echo "has_success=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_success=false" >> $GITHUB_OUTPUT
+          fi
+
+          # 检查是否全部成功
+          if [[ "${{ needs.build-linux.result }}" == "success" ]] && \
+             [[ "${{ needs.build-windows.result }}" == "success" ]] && \
+             [[ "${{ needs.build-macos.result }}" == "success" ]] && \
+             [[ "${{ needs.build-macos-arm64.result }}" == "success" ]]; then
+            echo "all_success=true" >> $GITHUB_OUTPUT
+          else
+            echo "all_success=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Publish release
+        if: steps.check.outputs.has_success == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const allSuccess = '${{ steps.check.outputs.all_success }}' === 'true';
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }},
+              draft: false,
+              prerelease: !allSuccess
+            });
+            console.log(allSuccess ? 'Published as stable release' : 'Published as pre-release (some builds failed)');
+
+      - name: Delete failed release
+        if: steps.check.outputs.has_success == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.deleteRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: ${{ needs.create-release.outputs.release_id }}
+            });
+            console.log('Deleted release because all builds failed');
+        continue-on-error: true
