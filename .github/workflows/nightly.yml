@@ -9,8 +9,7 @@ on:
 env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
-  GITHUB_TOKEN: ${{ secrets.NIGHTLY_REPO_TOKEN }}
-  GH_TOKEN: ${{ secrets.NIGHTLY_REPO_TOKEN }}
+  GH_TOKEN: ${{ secrets.GH_TOKEN }} 
   NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
 
 jobs:
