@@ -49,9 +49,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
           NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
-        env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
     outputs:
       release-id: ${{ steps.create-release.outputs.RELEASE_ID }}
 
