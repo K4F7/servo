@@ -21,6 +21,7 @@ jobs:
     steps:
       - id: create-release
         run: |
+          gh auth status   # <--- 添加这一行，它会直接列出这个 Token 拥有的权限
           NIGHTLY_TAG=$(date "+%F")
           RELEASE_URL=$(gh release create "${NIGHTLY_TAG}" \
             --draft \
