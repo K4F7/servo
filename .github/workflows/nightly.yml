@@ -36,7 +36,7 @@ jobs:
           )
           echo "RELEASE_ID=${RELEASE_ID}" >> ${GITHUB_OUTPUT}
         env:
-          GITHUB_TOKEN: ${{ secrets.NIGHTLY_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
           NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
     outputs:
       release-id: ${{ steps.create-release.outputs.RELEASE_ID }}
@@ -66,7 +66,7 @@ jobs:
             /repos/${NIGHTLY_REPO}/releases/${RELEASE_ID} \
             -F prerelease=true -F draft=false
     env:
-      GITHUB_TOKEN: ${{ secrets.NIGHTLY_REPO_TOKEN }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
       NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
       RELEASE_ID: ${{ needs.create-draft-release.outputs.release-id }}
     needs:
