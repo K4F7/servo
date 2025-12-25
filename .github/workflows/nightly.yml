@@ -21,14 +21,20 @@ jobs:
     steps:
       - id: create-release
         run: |
-          gh auth status   # <--- 添加这一行，它会直接列出这个 Token 拥有的权限
           NIGHTLY_TAG=$(date "+%F")
+          # 增加 --target main (或你的目标仓库默认分支名)
+          # 增加 --overwrite 防止重复运行时报错
           RELEASE_URL=$(gh release create "${NIGHTLY_TAG}" \
             --draft \
             --title "${NIGHTLY_TAG}" \
-            --notes 'Nightly builds based on servo/servo@${{ github.sha }}' \
-            --repo ${NIGHTLY_REPO})
+            --target main \
+            --notes "Nightly builds based on servo/servo@${{ github.sha }}" \
+            --repo "${NIGHTLY_REPO}" \
+            --overwrite) 
+          
           TEMP_TAG=$(basename "$RELEASE_URL")
+          
+          # 下面的 API 调用也要确保一致
           RELEASE_ID=$( \
             gh api -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
