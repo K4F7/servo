@@ -10,7 +10,7 @@ env:
   RUST_BACKTRACE: 1
   SHELL: /bin/bash
   GH_TOKEN: ${{ secrets.GH_TOKEN }} 
-  NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
+  NIGHTLY_REPO: ${{ github.repository }}
 
 jobs:
   create-draft-release:
@@ -48,7 +48,7 @@ jobs:
           echo "RELEASE_ID=${RELEASE_ID}" >> ${GITHUB_OUTPUT}
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
+          NIGHTLY_REPO: ${{ github.repository }}
     outputs:
       release-id: ${{ steps.create-release.outputs.RELEASE_ID }}
 
@@ -78,7 +78,7 @@ jobs:
             -F prerelease=true -F draft=false
     env:
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
-      NIGHTLY_REPO: ${{ github.repository_owner }}/servo-nightly-builds
+      NIGHTLY_REPO: ${{ github.repository }}
       RELEASE_ID: ${{ needs.create-draft-release.outputs.release-id }}
     needs:
       - create-draft-release
